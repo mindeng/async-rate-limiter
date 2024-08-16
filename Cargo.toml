@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3.30"
-tokio = {version = "1.39.2", features = ["time", "rt", "rt-multi-thread", "macros"]}
+tokio = {version = "1.39.2", features = ["time", "rt"]}
 
-[[example]]
-name = "tokio-demo"
+[dev-dependencies]
+tokio = {version = "1.39.2", features = ["time", "rt", "rt-multi-thread", "macros"]}

@@ -1,5 +1,6 @@
-//! rate-limiter implements a token bucket algorithm that can be used to limit
-//! API access frequency.
+//! rate-limiter implements a [token bucket
+//! algorithm](https://en.wikipedia.org/wiki/Token_bucket) that can be used to
+//! limit API access frequency.
 //!
 //! Thanks to Rust’s async capabilities, this feature is very simple to use.
 //! Just put your operations after [`RateLimiter::acquire()`].`await`, then the
