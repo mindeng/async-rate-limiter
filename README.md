@@ -3,7 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/rate-limiter.svg)](https://crates.io/crates/rate-limiter)
 [![Documentation](https://docs.rs/rate-limiter/badge.svg)](https://docs.rs/rate-limiter)
 [![LICENSE](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/mindeng/rate-limiter/actions/workflows/rust.yml/badge.svg)](https://github.com/mindeng/rate-limiter/actions)
+[![CI](https://github.com/mindeng/rate-limiter-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/mindeng/rate-limiter-rs/actions)
 
 rate-limiter implements a [token bucket
 algorithm](https://en.wikipedia.org/wiki/Token_bucket) that can be used to
@@ -33,3 +33,7 @@ async fn main() {
     }
 }
 ```
+
+Please refer to
+[![Documentation](https://docs.rs/rate-limiter/badge.svg)](https://docs.rs/rate-limiter)
+for more details.

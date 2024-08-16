@@ -2,6 +2,10 @@
 name = "rate-limiter"
 version = "0.1.0"
 edition = "2021"
+license-file = "LICENSE"
+description = "Implements a token bucket algorithm that can be used to limit API access frequency. Written in pure Rust."
+homepage = "https://github.com/mindeng/rate-limiter-rs"
+repository = "https://github.com/mindeng/rate-limiter-rs"
 
 [dependencies]
 futures = "0.3.30"
