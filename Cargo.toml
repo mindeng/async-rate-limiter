@@ -5,7 +5,17 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3.30"
-tokio = {version = "1.39.2", features = ["time", "rt"]}
+tokio = {version = "1", features = ["time", "rt"], optional = true}
+async-std = {version = "1", optional = true}
+
+[features]
+default = ["rt-tokio"]
+
+# Run `cargo t` to test this feature
+rt-tokio = ["tokio"]
+
+# Run `cargo t --features rt-async-std --no-default-features` to test this feature
+rt-async-std = ["async-std"]
 
 [dev-dependencies]
-tokio = {version = "1.39.2", features = ["time", "rt", "rt-multi-thread", "macros"]}
+tokio = {version = "1", features = ["time", "rt", "rt-multi-thread", "macros"]}

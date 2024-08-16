@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use crate::{
-    util::{delay, spawn, JoinHandle},
-};
+use crate::rt::{delay, spawn, JoinHandle};
 use futures::{
     channel::mpsc::{channel, Receiver},
     select, FutureExt, StreamExt,
@@ -17,10 +15,13 @@ impl TokenBucketRateLimiter {
     /// Creates a new [`TokenBucketRateLimiter`].
     ///
     /// `rate` specifies the average number of operations allowed per second.
-    /// 
+    ///
     /// `burst` specifies the maximum burst number of operations allowed in a
     /// second.
+    ///
+    /// **Note**: `rate` *MUST* be little or equal than `burst`.
     pub fn new(rate: usize, burst: usize) -> TokenBucketRateLimiter {
+        assert!(rate <= burst);
         let (mut sender, receiver) = channel(burst);
 
         let handle = spawn(async move {

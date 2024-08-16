@@ -1,9 +1,7 @@
 use futures::Future;
 use std::time::Duration;
 
-pub trait JoinHandle: Send {
-    fn cancel(&mut self);
-}
+use super::JoinHandle;
 
 pub struct JoinHandleTokio<T> {
     inner: tokio::task::JoinHandle<T>,
@@ -27,5 +25,6 @@ where
     F::Output: Send + 'static,
 {
     let handle = tokio::spawn(future);
+
     JoinHandleTokio { inner: handle }
 }

@@ -31,7 +31,7 @@
 mod token_bucket;
 pub use token_bucket::TokenBucketRateLimiter as RateLimiter;
 
-mod util;
+mod rt;
 
 #[cfg(test)]
 mod tests {
@@ -40,6 +40,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
     async fn test_rate_limit() {
         let mut rl = RateLimiter::new(3, 5);
 
