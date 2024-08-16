@@ -1,4 +1,4 @@
-# async-rate-limit
+# async-rate-limiter
 
 [![crates.io](https://img.shields.io/crates/v/async-rate-limiter.svg)](https://crates.io/crates/async-rate-limiter)
 [![Documentation](https://docs.rs/async-rate-limiter/badge.svg)](https://docs.rs/async-rate-limiter)
@@ -19,9 +19,10 @@ Update your `Cargo.toml`:
 async-rate-limiter = { version = "1.39.2", features = ["rt-tokio"] }
 ```
 
-Thanks to Rust’s async functionality, this crate is very simple to use.
-Just put your function call after [`RateLimiter::acquire()`].`await`, then
-the function will be called with the specified rate limit.
+Thanks to Rust’s async functionality, this crate is very simple to use. Just
+put your function call after
+[`RateLimiter::acquire()`](https://docs.rs/async-rate-limiter/latest/async_rate_limiter/struct.RateLimiter.html#method.acquire).`await`,
+then the function will be called with the specified rate limit.
 
 Here is a simple example:
 
