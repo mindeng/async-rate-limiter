@@ -1,6 +1,9 @@
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering::SeqCst},
+        atomic::{
+            AtomicUsize,
+            Ordering::{Relaxed, SeqCst},
+        },
         Arc, Mutex,
     },
     task::Poll,
@@ -8,7 +11,7 @@ use std::{
 };
 
 use crate::rt::{delay, interval, spawn, JoinHandle};
-use futures::{future::select, pin_mut, select, task::AtomicWaker, Future, FutureExt, StreamExt};
+use futures::{future::select, pin_mut, task::AtomicWaker, Future, StreamExt};
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
@@ -18,9 +21,10 @@ pub struct TokenBucketRateLimiter {
     counter: Arc<AtomicUsize>,
 }
 
-pub struct TokenBucketInner {
+struct TokenBucketInner {
     waker: AtomicWaker,
     tokens: AtomicUsize,
+    burst: AtomicUsize,
 }
 
 impl Clone for TokenBucketRateLimiter {
@@ -43,20 +47,16 @@ impl TokenBucketRateLimiter {
     ///
     /// `rate` specifies the average number of operations allowed per second.
     ///
-    /// `burst` specifies the maximum burst number of operations allowed in a
-    /// second.
-    ///
     /// **Note**: `rate` *MUST* be greater than zero.
-    /// **Note**: `rate` *MUST* be less or equal than `burst`.
-    pub fn new(rate: usize, burst: usize) -> TokenBucketRateLimiter {
-        assert!(rate > 0 && rate <= burst);
-
+    pub fn new(rate: usize) -> TokenBucketRateLimiter {
+        assert!(rate > 0);
         let inner = TokenBucketInner {
             tokens: AtomicUsize::new(0),
             waker: AtomicWaker::new(),
+            burst: AtomicUsize::new(rate),
         };
         let inner = Arc::new(inner);
-        let handle = Self::start_fill_tokens(inner.clone(), rate, burst);
+        let handle = Self::start_fill_tokens(inner.clone(), rate);
 
         TokenBucketRateLimiter {
             inner,
@@ -65,18 +65,26 @@ impl TokenBucketRateLimiter {
         }
     }
 
-    fn start_fill_tokens(
-        inner: Arc<TokenBucketInner>,
-        rate: usize,
-        burst: usize,
-    ) -> impl JoinHandle {
+    /// `burst` specifies the maximum burst number of operations allowed in a
+    /// second.
+    ///
+    /// The default value of `burst` is same as `rate`.
+    ///
+    /// **Note**: `burst` *MUST* be greater than zero.
+    pub fn burst(&mut self, burst: usize) -> &mut TokenBucketRateLimiter {
+        assert!(burst > 0);
+        self.inner.burst.store(burst, Relaxed);
+        self
+    }
+
+    fn start_fill_tokens(inner: Arc<TokenBucketInner>, rate: usize) -> impl JoinHandle {
         spawn(async move {
             // TODO: tick once per second
             let mut stream = interval(Duration::from_nanos(NANOS_PER_SEC / (rate as u64)));
 
             while (stream.next().await).is_some() {
                 println!("tick ... {:p}", inner);
-                inner.inc_num_tokens(burst);
+                inner.inc_num_tokens();
                 inner.waker.wake();
             }
         })
@@ -89,7 +97,10 @@ impl TokenBucketRateLimiter {
     /// after exceeding the `timeout`, false will be returned.
     ///
     /// In all other cases, true will be returned.
-    pub async fn acquire(&mut self, timeout: Option<Duration>) -> bool {
+    pub async fn acquire<T: Into<Option<Duration>> + std::marker::Copy>(
+        &mut self,
+        timeout: T,
+    ) -> bool {
         loop {
             let old = self.inner.dec_num_tokens();
             if old.is_some() {
@@ -99,6 +110,8 @@ impl TokenBucketRateLimiter {
             let notify = Notify {
                 token_bucket: self.inner.clone(),
             };
+
+            let timeout: Option<Duration> = timeout.into();
 
             if let Some(timeout) = timeout {
                 const TOLERANCE: Duration = Duration::from_millis(10);
@@ -124,8 +137,9 @@ impl TokenBucketRateLimiter {
 impl TokenBucketInner {
     // Increment the number of tokens and ensure that it does not exceeds
     // `burst`. Returns the resulting number.
-    fn inc_num_tokens(&self, burst: usize) -> usize {
+    fn inc_num_tokens(&self) -> usize {
         let mut curr = self.tokens.load(SeqCst);
+        let burst = self.burst.load(Relaxed);
         loop {
             if curr >= burst {
                 return curr;

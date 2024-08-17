@@ -24,7 +24,8 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut rl = RateLimiter::new(3, 5);
+//!     let mut rl = RateLimiter::new(3);
+//!     rl.burst(5);
 //!     
 //!     let ok = rl.acquire(None).await;
 //!     assert!(ok);
@@ -60,7 +61,8 @@ mod tests {
     #[tokio::test]
     #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
     async fn test_acquire() {
-        let mut rl = RateLimiter::new(3, 5);
+        let mut rl = RateLimiter::new(3);
+        rl.burst(5);
 
         let start = Instant::now();
         let res = rl.acquire(None).await;
@@ -92,7 +94,8 @@ mod tests {
     async fn test_clone() {
         use rt::spawn;
 
-        let mut rl = RateLimiter::new(3, 5);
+        let mut rl = RateLimiter::new(3);
+        rl.burst(5);
 
         let start = Instant::now();
         let res = rl.acquire(None).await;

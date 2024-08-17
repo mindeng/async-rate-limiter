@@ -1,8 +1,5 @@
 use futures::{Future, Stream, StreamExt};
-use std::{
-    pin::Pin,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 use tokio_stream::wrappers::IntervalStream;
 
 use super::JoinHandle;
