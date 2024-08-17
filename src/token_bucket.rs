@@ -79,7 +79,8 @@ impl TokenBucketRateLimiter {
 
     fn start_fill_tokens(inner: Arc<TokenBucketInner>, rate: usize) -> impl JoinHandle {
         spawn(async move {
-            // TODO: tick once per second
+            // TODO: tick once per second at most, and limit the rate in
+            // acquire().
             let mut stream = interval(Duration::from_nanos(NANOS_PER_SEC / (rate as u64)));
 
             while (stream.next().await).is_some() {
@@ -92,39 +93,46 @@ impl TokenBucketRateLimiter {
 
     /// Acquire a token. When the token is successfully acquired, it means that
     /// you can safely perform frequency-controlled operations.
+    pub async fn acquire(&mut self) {
+        loop {
+            let old = self.inner.dec_num_tokens();
+            if old.is_some() {
+                return;
+            }
+
+            let notify = self.notify();
+
+            notify.await;
+        }
+    }
+
+    /// Acquire a token. When the token is successfully acquired, it means that
+    /// you can safely perform frequency-controlled operations.
     ///
-    /// If the `timeout` is not `None` and the method fails to obtain a token
-    /// after exceeding the `timeout`, false will be returned.
-    ///
-    /// In all other cases, true will be returned.
-    pub async fn acquire<T: Into<Option<Duration>> + std::marker::Copy>(
-        &mut self,
-        timeout: T,
-    ) -> bool {
+    /// If the method fails to obtain a token after exceeding the `timeout`,
+    /// false will be returned, otherwise true will be returned.
+    pub async fn acquire_with_timeout(&mut self, timeout: Duration) -> bool {
         loop {
             let old = self.inner.dec_num_tokens();
             if old.is_some() {
                 return true;
             }
 
-            let notify = Notify {
-                token_bucket: self.inner.clone(),
-            };
+            let notify = self.notify();
 
-            let timeout: Option<Duration> = timeout.into();
-
-            if let Some(timeout) = timeout {
-                const TOLERANCE: Duration = Duration::from_millis(10);
-                let delay_fut = delay(timeout + TOLERANCE);
-                pin_mut!(delay_fut);
-                match select(notify, delay_fut).await {
-                    futures::future::Either::Left(_) => continue,
-                    futures::future::Either::Right(_) => return false,
-                }
-            } else {
-                notify.await;
-                continue;
+            const TOLERANCE: Duration = Duration::from_millis(10);
+            let delay_fut = delay(timeout + TOLERANCE);
+            pin_mut!(delay_fut);
+            match select(notify, delay_fut).await {
+                futures::future::Either::Left(_) => continue,
+                futures::future::Either::Right(_) => return false,
             }
+        }
+    }
+
+    fn notify(&mut self) -> Notify {
+        Notify {
+            token_bucket: self.inner.clone(),
         }
     }
 

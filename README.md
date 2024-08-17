@@ -32,14 +32,14 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    let mut rl = RateLimiter::new(3, 5);
+    let mut rl = RateLimiter::new(3);
+    rl.burst(5);
     
-    let ok = rl.acquire(None).await;
-    assert!(ok);
+    rl.acquire().await;
     println!("Do something that you want to limit the rate ...");
 
     // acquire with a timeout
-    let ok = rl.acquire(Some(Duration::from_secs(10))).await;
+    let ok = rl.acquire_with_timeout(Duration::from_secs(10)).await;
     if ok {
         println!("Do something that you want to limit the rate ...");
     }

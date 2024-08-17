@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Thanks to Rust’s async functionality, this crate is very simple to use.
-//! Just put your function call after [`RateLimiter::acquire()`].`await`, then
+//! Just put your function call after [`RateLimiter::acquire_with_timeout()`].`await`, then
 //! the function will be called with the specified rate limit.
 //!
 //! Here is a simple example:
@@ -27,12 +27,11 @@
 //!     let mut rl = RateLimiter::new(3);
 //!     rl.burst(5);
 //!     
-//!     let ok = rl.acquire(None).await;
-//!     assert!(ok);
+//!     rl.acquire().await;
 //!     println!("Do something that you want to limit the rate ...");
 //!
 //!     // acquire with a timeout
-//!     let ok = rl.acquire(Some(Duration::from_secs(10))).await;
+//!     let ok = rl.acquire_with_timeout(Duration::from_secs(10)).await;
 //!     if ok {
 //!         println!("Do something that you want to limit the rate ...");
 //!     }
@@ -60,22 +59,19 @@ mod tests {
 
     #[tokio::test]
     #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
-    async fn test_acquire() {
+    async fn test_acquire_with_timeout() {
         let mut rl = RateLimiter::new(3);
         rl.burst(5);
 
         let start = Instant::now();
-        let res = rl.acquire(None).await;
-        assert!(res);
+        rl.acquire().await;
         assert!(start.elapsed() < Duration::from_millis(340));
-        let res = rl.acquire(None).await;
-        assert!(res);
+        rl.acquire().await;
         assert!(start.elapsed() < Duration::from_millis(680));
-        let res = rl.acquire(None).await;
-        assert!(res);
+        rl.acquire().await;
         assert!(start.elapsed() < Duration::from_millis(1010));
 
-        let res = rl.acquire(Some(Duration::from_millis(400))).await;
+        let res = rl.acquire_with_timeout(Duration::from_millis(400)).await;
         assert!(res);
         assert!(
             start.elapsed() >= Duration::from_secs(1),
@@ -84,7 +80,7 @@ mod tests {
         );
         assert!(start.elapsed() < Duration::from_millis(1340));
 
-        let res = rl.acquire(Some(Duration::from_millis(10))).await;
+        let res = rl.acquire_with_timeout(Duration::from_millis(10)).await;
         assert!(!res);
         assert!(start.elapsed() < Duration::from_millis(1360));
     }
@@ -98,27 +94,24 @@ mod tests {
         rl.burst(5);
 
         let start = Instant::now();
-        let res = rl.acquire(None).await;
-        assert!(res);
+        rl.acquire().await;
         assert!(start.elapsed() < Duration::from_millis(340));
-        let res = rl.acquire(None).await;
-        assert!(res);
+        rl.acquire().await;
         assert!(start.elapsed() < Duration::from_millis(680));
-        let res = rl.acquire(None).await;
-        assert!(res);
+        rl.acquire().await;
         assert!(start.elapsed() < Duration::from_millis(1010));
 
         let rl2 = rl.clone();
         spawn(async move {
             let mut rl = rl2;
             let start = Instant::now();
-            let res = rl.acquire(Some(Duration::from_millis(700))).await;
+            let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
             assert!(res);
             assert!(start.elapsed() <= Duration::from_millis(800));
         });
 
         let start = Instant::now();
-        let res = rl.acquire(Some(Duration::from_millis(700))).await;
+        let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
         assert!(res);
         assert!(
             start.elapsed() <= Duration::from_millis(750),
