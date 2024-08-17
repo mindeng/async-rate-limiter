@@ -10,13 +10,15 @@ repository = "https://github.com/mindeng/async-rate-limiter"
 [dependencies]
 futures = "0.3.30"
 tokio = {version = "1", features = ["time", "rt"], optional = true}
-async-std = {version = "1", optional = true}
+tokio-stream = {version = "0.1", features = ["time"], optional = true}
+# use "unstable" features to enable `interval` function
+async-std = {version = "1", optional = true, features = ["unstable"]}
 
 [features]
 default = ["rt-tokio"]
 
 # Run `cargo t` to test this feature
-rt-tokio = ["tokio"]
+rt-tokio = ["tokio", "tokio-stream"]
 
 # Run `cargo t --features rt-async-std --no-default-features` to test this feature
 rt-async-std = ["async-std"]

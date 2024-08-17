@@ -53,31 +53,74 @@ mod tests {
 
     use super::*;
 
+    // When using async-std runtime, the delay/interval will be longer than
+    // expected, so the time check condition is deliberately relaxed in the
+    // test case.
+
     #[tokio::test]
     #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
-    async fn test_rate_limit() {
+    async fn test_acquire() {
         let mut rl = RateLimiter::new(3, 5);
 
         let start = Instant::now();
         let res = rl.acquire(None).await;
         assert!(res);
+        assert!(start.elapsed() < Duration::from_millis(340));
         let res = rl.acquire(None).await;
         assert!(res);
+        assert!(start.elapsed() < Duration::from_millis(680));
         let res = rl.acquire(None).await;
         assert!(res);
-        assert!(start.elapsed() < Duration::from_millis(100));
+        assert!(start.elapsed() < Duration::from_millis(1010));
 
-        let res = rl.acquire(Some(Duration::from_secs(1))).await;
+        let res = rl.acquire(Some(Duration::from_millis(400))).await;
         assert!(res);
-        let res = rl.acquire(None).await;
-        assert!(res);
-        let res = rl.acquire(None).await;
-        assert!(res);
-        assert!(start.elapsed() >= Duration::from_secs(1));
-        assert!(start.elapsed() < Duration::from_secs(1) + Duration::from_millis(100));
+        assert!(
+            start.elapsed() >= Duration::from_secs(1),
+            "got: {:?}",
+            start.elapsed()
+        );
+        assert!(start.elapsed() < Duration::from_millis(1340));
 
         let res = rl.acquire(Some(Duration::from_millis(10))).await;
         assert!(!res);
-        assert!(start.elapsed() < Duration::from_secs(1) + Duration::from_millis(100));
+        assert!(start.elapsed() < Duration::from_millis(1360));
+    }
+
+    #[tokio::test]
+    #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
+    async fn test_clone() {
+        use rt::spawn;
+
+        let mut rl = RateLimiter::new(3, 5);
+
+        let start = Instant::now();
+        let res = rl.acquire(None).await;
+        assert!(res);
+        assert!(start.elapsed() < Duration::from_millis(340));
+        let res = rl.acquire(None).await;
+        assert!(res);
+        assert!(start.elapsed() < Duration::from_millis(680));
+        let res = rl.acquire(None).await;
+        assert!(res);
+        assert!(start.elapsed() < Duration::from_millis(1010));
+
+        let rl2 = rl.clone();
+        spawn(async move {
+            let mut rl = rl2;
+            let start = Instant::now();
+            let res = rl.acquire(Some(Duration::from_millis(700))).await;
+            assert!(res);
+            assert!(start.elapsed() <= Duration::from_millis(800));
+        });
+
+        let start = Instant::now();
+        let res = rl.acquire(Some(Duration::from_millis(700))).await;
+        assert!(res);
+        assert!(
+            start.elapsed() <= Duration::from_millis(750),
+            "got: {:?}",
+            start.elapsed()
+        );
     }
 }

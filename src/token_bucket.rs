@@ -1,14 +1,41 @@
-use std::time::Duration;
-
-use crate::rt::{delay, spawn, JoinHandle};
-use futures::{
-    channel::mpsc::{channel, Receiver},
-    select, FutureExt, StreamExt,
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering::SeqCst},
+        Arc, Mutex,
+    },
+    task::Poll,
+    time::Duration,
 };
 
+use crate::rt::{delay, interval, spawn, JoinHandle};
+use futures::{future::select, pin_mut, select, task::AtomicWaker, Future, FutureExt, StreamExt};
+
+const NANOS_PER_SEC: u64 = 1_000_000_000;
+
 pub struct TokenBucketRateLimiter {
-    receiver: Receiver<()>,
-    handle: Option<Box<dyn JoinHandle>>,
+    inner: Arc<TokenBucketInner>,
+    handle: Arc<Mutex<Box<dyn JoinHandle>>>,
+    counter: Arc<AtomicUsize>,
+}
+
+pub struct TokenBucketInner {
+    waker: AtomicWaker,
+    tokens: AtomicUsize,
+}
+
+impl Clone for TokenBucketRateLimiter {
+    fn clone(&self) -> Self {
+        let prev = self.counter.fetch_add(1, SeqCst);
+        if prev == usize::MAX {
+            panic!("cannot clone `TokenBucketRateLimiter` -- too many outstanding instances");
+        }
+
+        TokenBucketRateLimiter {
+            inner: self.inner.clone(),
+            handle: self.handle.clone(),
+            counter: self.counter.clone(),
+        }
+    }
 }
 
 impl TokenBucketRateLimiter {
@@ -19,24 +46,40 @@ impl TokenBucketRateLimiter {
     /// `burst` specifies the maximum burst number of operations allowed in a
     /// second.
     ///
-    /// **Note**: `rate` *MUST* be little or equal than `burst`.
+    /// **Note**: `rate` *MUST* be greater than zero.
+    /// **Note**: `rate` *MUST* be less or equal than `burst`.
     pub fn new(rate: usize, burst: usize) -> TokenBucketRateLimiter {
-        assert!(rate <= burst);
-        let (mut sender, receiver) = channel(burst);
+        assert!(rate > 0 && rate <= burst);
 
-        let handle = spawn(async move {
-            loop {
-                for _ in 0..rate {
-                    let _ = sender.try_send(());
-                }
-                delay(Duration::from_secs(1)).await;
-            }
-        });
+        let inner = TokenBucketInner {
+            tokens: AtomicUsize::new(0),
+            waker: AtomicWaker::new(),
+        };
+        let inner = Arc::new(inner);
+        let handle = Self::start_fill_tokens(inner.clone(), rate, burst);
 
         TokenBucketRateLimiter {
-            receiver,
-            handle: Some(Box::new(handle)),
+            inner,
+            handle: Arc::new(Mutex::new(Box::new(handle))),
+            counter: Arc::new(AtomicUsize::new(1)),
         }
+    }
+
+    fn start_fill_tokens(
+        inner: Arc<TokenBucketInner>,
+        rate: usize,
+        burst: usize,
+    ) -> impl JoinHandle {
+        spawn(async move {
+            // TODO: tick once per second
+            let mut stream = interval(Duration::from_nanos(NANOS_PER_SEC / (rate as u64)));
+
+            while (stream.next().await).is_some() {
+                println!("tick ... {:p}", inner);
+                inner.inc_num_tokens(burst);
+                inner.waker.wake();
+            }
+        })
     }
 
     /// Acquire a token. When the token is successfully acquired, it means that
@@ -47,32 +90,107 @@ impl TokenBucketRateLimiter {
     ///
     /// In all other cases, true will be returned.
     pub async fn acquire(&mut self, timeout: Option<Duration>) -> bool {
-        let mut next = self.receiver.next().fuse();
-        if let Some(timeout) = timeout {
-            const TOLERANCE: Duration = Duration::from_millis(10);
-            select! {
-                _ = next => {
-                    true
-                },
-                _ = delay(timeout+TOLERANCE).fuse() => {
-                    false
-                }
+        loop {
+            let old = self.inner.dec_num_tokens();
+            if old.is_some() {
+                return true;
             }
-        } else {
-            next.await;
-            true
+
+            let notify = Notify {
+                token_bucket: self.inner.clone(),
+            };
+
+            if let Some(timeout) = timeout {
+                const TOLERANCE: Duration = Duration::from_millis(10);
+                let delay_fut = delay(timeout + TOLERANCE);
+                pin_mut!(delay_fut);
+                match select(notify, delay_fut).await {
+                    futures::future::Either::Left(_) => continue,
+                    futures::future::Either::Right(_) => return false,
+                }
+            } else {
+                notify.await;
+                continue;
+            }
         }
     }
 
     fn close(&mut self) {
-        if let Some(mut handle) = self.handle.take() {
-            handle.cancel();
+        let mut handle = self.handle.lock().unwrap();
+        handle.cancel();
+    }
+}
+
+impl TokenBucketInner {
+    // Increment the number of tokens and ensure that it does not exceeds
+    // `burst`. Returns the resulting number.
+    fn inc_num_tokens(&self, burst: usize) -> usize {
+        let mut curr = self.tokens.load(SeqCst);
+        loop {
+            if curr >= burst {
+                return curr;
+            }
+
+            let next = curr + 1;
+            match self.tokens.compare_exchange(curr, next, SeqCst, SeqCst) {
+                Ok(_) => {
+                    return next;
+                }
+                Err(actual) => curr = actual,
+            }
+        }
+    }
+
+    // Decrement the number of tokens and ensure that it won't be less than
+    // zero. Returns the resulting number if the decrement operation is done
+    // successfully.
+    fn dec_num_tokens(&self) -> Option<usize> {
+        let mut curr = self.tokens.load(SeqCst);
+        loop {
+            if curr == 0 {
+                return None;
+            }
+
+            let next = curr - 1;
+            match self.tokens.compare_exchange(curr, next, SeqCst, SeqCst) {
+                Ok(_) => {
+                    return Some(next);
+                }
+                Err(actual) => curr = actual,
+            }
         }
     }
 }
 
 impl Drop for TokenBucketRateLimiter {
     fn drop(&mut self) {
-        self.close();
+        let prev = self.counter.fetch_sub(1, SeqCst);
+        if prev == 1 {
+            self.close();
+            println!("dropped ... {:p}", self);
+        }
+    }
+}
+
+/// Notify is a future that will be completed when there is an available token
+/// in the token bucket.
+pub struct Notify {
+    token_bucket: Arc<TokenBucketInner>,
+}
+
+impl Future for Notify {
+    type Output = usize;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let num = self.token_bucket.tokens.load(SeqCst);
+        if num >= 1 {
+            Poll::Ready(num)
+        } else {
+            self.token_bucket.waker.register(cx.waker());
+            Poll::Pending
+        }
     }
 }

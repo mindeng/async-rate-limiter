@@ -1,4 +1,4 @@
-use futures::Future;
+use futures::{Future, Stream};
 use std::time::Duration;
 
 use super::JoinHandle;
@@ -8,6 +8,7 @@ pub struct JoinHandleAsyncStd<T> {
 }
 
 unsafe impl<T: Send> Send for JoinHandleAsyncStd<T> {}
+unsafe impl<T: Send> Sync for JoinHandleAsyncStd<T> {}
 
 impl<T: Send + 'static> JoinHandle for JoinHandleAsyncStd<T> {
     fn cancel(&mut self) {
@@ -19,6 +20,10 @@ impl<T: Send + 'static> JoinHandle for JoinHandleAsyncStd<T> {
 
 pub async fn delay(duration: Duration) {
     async_std::task::sleep(duration).await
+}
+
+pub fn interval(duration: Duration) -> impl Stream<Item = ()> {
+    async_std::stream::interval(duration)
 }
 
 pub fn spawn<F>(future: F) -> impl JoinHandle
