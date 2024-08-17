@@ -84,7 +84,6 @@ impl TokenBucketRateLimiter {
             let mut stream = interval(Duration::from_nanos(NANOS_PER_SEC / (rate as u64)));
 
             while (stream.next().await).is_some() {
-                println!("tick ... {:p}", inner);
                 inner.inc_num_tokens();
                 inner.waker.wake();
             }
@@ -189,7 +188,6 @@ impl Drop for TokenBucketRateLimiter {
         let prev = self.counter.fetch_sub(1, SeqCst);
         if prev == 1 {
             self.close();
-            println!("dropped ... {:p}", self);
         }
     }
 }
