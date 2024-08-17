@@ -9,7 +9,7 @@
 //! ```toml
 //! [dependencies]
 //! # Change features to ["rt-async-std"] if you are using async-std runtime.
-//! async-rate-limiter = { version = "1.39.2", features = ["rt-tokio"] }
+//! async-rate-limiter = { version = "1", features = ["rt-tokio"] }
 //! ```
 //!
 //! Thanks to Rust’s async functionality, this crate is very simple to use.
