@@ -24,7 +24,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut rl = RateLimiter::new(3);
+//!     let rl = RateLimiter::new(3);
 //!     rl.burst(5);
 //!     
 //!     rl.acquire().await;
@@ -61,7 +61,7 @@ mod tests {
     #[tokio::test]
     #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
     async fn test_acquire_with_timeout() {
-        let mut rl = RateLimiter::new(3);
+        let rl = RateLimiter::new(3);
         rl.burst(5);
 
         let start = Instant::now();
@@ -91,7 +91,7 @@ mod tests {
     #[tokio::test]
     #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
     async fn test_clone() {
-        let mut rl = RateLimiter::new(3);
+        let rl = RateLimiter::new(3);
         rl.burst(5);
 
         let start = Instant::now();
@@ -106,7 +106,7 @@ mod tests {
 
         let rl2 = rl.clone();
         let jh = spawn(async move {
-            let mut rl = rl2;
+            let rl = rl2;
             let start = Instant::now();
             let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
             assert!(res);
@@ -128,7 +128,7 @@ mod tests {
     async fn test_cancel_task() {
         use rt::delay;
 
-        let mut rl = RateLimiter::new(3);
+        let rl = RateLimiter::new(3);
         rl.burst(5);
 
         let start = Instant::now();
@@ -143,7 +143,7 @@ mod tests {
 
         let rl2 = rl.clone();
         let jh = spawn(async move {
-            let mut rl = rl2;
+            let rl = rl2;
             let start = Instant::now();
             let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
             assert!(res);

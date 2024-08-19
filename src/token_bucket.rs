@@ -76,7 +76,7 @@ impl TokenBucketRateLimiter {
     /// The default value of `burst` is same as `rate`.
     ///
     /// **Note**: `burst` *MUST* be greater than zero.
-    pub fn burst(&mut self, burst: usize) -> &mut TokenBucketRateLimiter {
+    pub fn burst(&self, burst: usize) -> &TokenBucketRateLimiter {
         assert!(burst > 0);
         self.burst.store(burst, Relaxed);
         self
@@ -84,7 +84,7 @@ impl TokenBucketRateLimiter {
 
     /// Acquire a token. When the token is successfully acquired, it means that
     /// you can safely perform frequency-controlled operations.
-    pub async fn acquire(&mut self) {
+    pub async fn acquire(&self) {
         let ready = {
             let mut inner = self.inner.lock().unwrap();
             if let Some(remain) = inner.tokens.checked_sub(1) {
@@ -109,7 +109,7 @@ impl TokenBucketRateLimiter {
     ///
     /// If the method fails to obtain a token after exceeding the `timeout`,
     /// false will be returned, otherwise true will be returned.
-    pub async fn acquire_with_timeout(&mut self, timeout: Duration) -> bool {
+    pub async fn acquire_with_timeout(&self, timeout: Duration) -> bool {
         let ready = {
             let mut inner = self.inner.lock().unwrap();
             if let Some(remain) = inner.tokens.checked_sub(1) {
