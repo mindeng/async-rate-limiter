@@ -5,7 +5,7 @@ use tokio_stream::wrappers::IntervalStream;
 use super::JoinHandle;
 
 pub struct JoinHandleTokio<T> {
-    inner: tokio::task::JoinHandle<T>,
+    inner: Option<tokio::task::JoinHandle<T>>,
 }
 
 unsafe impl<T: Send> Send for JoinHandleTokio<T> {}
@@ -13,7 +13,9 @@ unsafe impl<T: Send> Sync for JoinHandleTokio<T> {}
 
 impl<T: Send> JoinHandle for JoinHandleTokio<T> {
     fn cancel(&mut self) {
-        self.inner.abort();
+        if let Some(jh) = self.inner.take() {
+            jh.abort();
+        }
     }
 }
 
@@ -34,5 +36,7 @@ where
 {
     let handle = tokio::spawn(future);
 
-    JoinHandleTokio { inner: handle }
+    JoinHandleTokio {
+        inner: Some(handle),
+    }
 }

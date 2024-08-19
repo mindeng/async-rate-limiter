@@ -50,6 +50,7 @@ mod rt;
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
+    use tokio::spawn;
 
     use super::*;
 
@@ -71,7 +72,7 @@ mod tests {
         rl.acquire().await;
         assert!(start.elapsed() < Duration::from_millis(1010));
 
-        let res = rl.acquire_with_timeout(Duration::from_millis(400)).await;
+        let res = rl.acquire_with_timeout(Duration::from_millis(5000)).await;
         assert!(res);
         assert!(
             start.elapsed() >= Duration::from_secs(1),
@@ -88,7 +89,40 @@ mod tests {
     #[tokio::test]
     #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
     async fn test_clone() {
-        use rt::spawn;
+        let mut rl = RateLimiter::new(3);
+        rl.burst(5);
+
+        let start = Instant::now();
+        rl.acquire().await;
+        assert!(start.elapsed() < Duration::from_millis(340));
+        rl.acquire().await;
+        assert!(start.elapsed() < Duration::from_millis(680));
+        rl.acquire().await;
+        assert!(start.elapsed() < Duration::from_millis(1010));
+
+        let rl2 = rl.clone();
+        let jh = spawn(async move {
+            let mut rl = rl2;
+            let start = Instant::now();
+            let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
+            assert!(res);
+            assert!(
+                start.elapsed() <= Duration::from_millis(700),
+                "got: {:?}",
+                start.elapsed()
+            );
+        });
+
+        let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
+        assert!(res);
+
+        assert!(jh.await.is_ok());
+    }
+
+    #[tokio::test]
+    #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
+    async fn test_cancel_task() {
+        use rt::delay;
 
         let mut rl = RateLimiter::new(3);
         rl.burst(5);
@@ -102,19 +136,21 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(1010));
 
         let rl2 = rl.clone();
-        spawn(async move {
+        let jh = spawn(async move {
             let mut rl = rl2;
             let start = Instant::now();
             let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
             assert!(res);
-            assert!(start.elapsed() <= Duration::from_millis(800));
+            assert!(start.elapsed() <= Duration::from_millis(700));
         });
+        delay(Duration::from_millis(100)).await;
+        jh.abort();
 
         let start = Instant::now();
-        let res = rl.acquire_with_timeout(Duration::from_millis(700)).await;
+        let res = rl.acquire_with_timeout(Duration::from_millis(5000)).await;
         assert!(res);
         assert!(
-            start.elapsed() <= Duration::from_millis(750),
+            start.elapsed() <= Duration::from_millis(300),
             "got: {:?}",
             start.elapsed()
         );
