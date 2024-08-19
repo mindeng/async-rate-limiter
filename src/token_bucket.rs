@@ -4,27 +4,25 @@ use std::{
             AtomicUsize,
             Ordering::{Relaxed, SeqCst},
         },
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
     },
-    task::Poll,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use crate::rt::{delay, interval, spawn, JoinHandle};
-use futures::{future::select, pin_mut, task::AtomicWaker, Future, StreamExt};
+use crate::rt::delay;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
 pub struct TokenBucketRateLimiter {
-    inner: Arc<TokenBucketInner>,
-    handle: Arc<Mutex<Box<dyn JoinHandle>>>,
+    inner: Arc<Mutex<TokenBucketInner>>,
     counter: Arc<AtomicUsize>,
+    burst: Arc<AtomicUsize>,
+    period_ns: u64,
 }
 
 struct TokenBucketInner {
-    waker: AtomicWaker,
-    tokens: AtomicUsize,
-    burst: AtomicUsize,
+    tokens: usize,
+    last: Instant,
 }
 
 impl Clone for TokenBucketRateLimiter {
@@ -36,8 +34,9 @@ impl Clone for TokenBucketRateLimiter {
 
         TokenBucketRateLimiter {
             inner: self.inner.clone(),
-            handle: self.handle.clone(),
             counter: self.counter.clone(),
+            burst: self.burst.clone(),
+            period_ns: self.period_ns,
         }
     }
 }
@@ -50,18 +49,22 @@ impl TokenBucketRateLimiter {
     /// **Note**: `rate` *MUST* be greater than zero.
     pub fn new(rate: usize) -> TokenBucketRateLimiter {
         assert!(rate > 0);
+
+        let period_ns = NANOS_PER_SEC
+            .checked_div(rate as u64)
+            .expect("rate is too big");
+
         let inner = TokenBucketInner {
-            tokens: AtomicUsize::new(0),
-            waker: AtomicWaker::new(),
-            burst: AtomicUsize::new(rate),
+            tokens: 1,
+            last: Instant::now(),
         };
-        let inner = Arc::new(inner);
-        let handle = Self::start_fill_tokens(inner.clone(), rate);
+        let inner = Arc::new(Mutex::new(inner));
 
         TokenBucketRateLimiter {
             inner,
-            handle: Arc::new(Mutex::new(Box::new(handle))),
             counter: Arc::new(AtomicUsize::new(1)),
+            burst: Arc::new(AtomicUsize::new(rate)),
+            period_ns,
         }
     }
 
@@ -73,35 +76,69 @@ impl TokenBucketRateLimiter {
     /// **Note**: `burst` *MUST* be greater than zero.
     pub fn burst(&mut self, burst: usize) -> &mut TokenBucketRateLimiter {
         assert!(burst > 0);
-        self.inner.burst.store(burst, Relaxed);
+        self.burst.store(burst, Relaxed);
         self
-    }
-
-    fn start_fill_tokens(inner: Arc<TokenBucketInner>, rate: usize) -> impl JoinHandle {
-        spawn(async move {
-            // TODO: tick once per second at most, and limit the rate in
-            // acquire().
-            let mut stream = interval(Duration::from_nanos(NANOS_PER_SEC / (rate as u64)));
-
-            while (stream.next().await).is_some() {
-                inner.inc_num_tokens();
-                inner.waker.wake();
-            }
-        })
     }
 
     /// Acquire a token. When the token is successfully acquired, it means that
     /// you can safely perform frequency-controlled operations.
     pub async fn acquire(&mut self) {
-        loop {
-            let old = self.inner.dec_num_tokens();
-            if old.is_some() {
+        let ready = {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(remain) = inner.tokens.checked_sub(1) {
+                inner.tokens = remain;
                 return;
             }
 
-            let notify = self.notify();
+            // Update tokens & next
+            if let Err(Some(ready)) = self.update_tokens(inner, None) {
+                ready
+            } else {
+                return;
+            }
+        };
 
-            notify.await;
+        delay(ready).await
+    }
+
+    // Update tokens & next. Return:
+    // - Ok if token is available, otherwise return
+    // - Err(duration) if timeout is None or timeout is not exceeded,
+    //   the duration is the time need to wait
+    // - Err(None) if timeout is exceeded
+    fn update_tokens(
+        &self,
+        mut inner: MutexGuard<TokenBucketInner>,
+        timeout: Option<Duration>,
+    ) -> Result<(), Option<Duration>> {
+        let now = Instant::now();
+        let since_last = now
+            .checked_duration_since(inner.last)
+            .unwrap_or(Duration::ZERO);
+        let since_nanos = since_last.as_nanos();
+        if since_nanos >= self.period_ns as u128 {
+            let extra_tokens = since_nanos / (self.period_ns as u128);
+            assert!(extra_tokens >= 1);
+            inner.tokens = std::cmp::min(self.burst.load(Relaxed), extra_tokens as usize)
+                .checked_sub(1)
+                .unwrap();
+            inner.last += Duration::from_nanos((extra_tokens * self.period_ns as u128) as u64);
+            Ok(())
+        } else {
+            inner.last += Duration::from_nanos(self.period_ns);
+            inner.tokens = 1;
+            let need_to_wait = inner.last - now;
+            if let Some(timeout) = timeout {
+                if timeout >= need_to_wait {
+                    inner.tokens = 0;
+                    Err(Some(need_to_wait))
+                } else {
+                    Err(None)
+                }
+            } else {
+                inner.tokens = 0;
+                Err(Some(need_to_wait))
+            }
         }
     }
 
@@ -111,106 +148,26 @@ impl TokenBucketRateLimiter {
     /// If the method fails to obtain a token after exceeding the `timeout`,
     /// false will be returned, otherwise true will be returned.
     pub async fn acquire_with_timeout(&mut self, timeout: Duration) -> bool {
-        loop {
-            let old = self.inner.dec_num_tokens();
-            if old.is_some() {
+        let ready = {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(remain) = inner.tokens.checked_sub(1) {
+                inner.tokens = remain;
                 return true;
             }
 
-            let notify = self.notify();
-
-            const TOLERANCE: Duration = Duration::from_millis(10);
-            let delay_fut = delay(timeout + TOLERANCE);
-            pin_mut!(delay_fut);
-            match select(notify, delay_fut).await {
-                futures::future::Either::Left(_) => continue,
-                futures::future::Either::Right(_) => return false,
+            // Update tokens & next
+            match self.update_tokens(inner, Some(timeout)) {
+                Err(Some(ready)) => ready, // to wait
+                Err(None) => return false, // timeout
+                Ok(_) => return true,      // got token
             }
+        };
+
+        if ready > timeout {
+            return false;
         }
-    }
 
-    fn notify(&mut self) -> Notify {
-        Notify {
-            token_bucket: self.inner.clone(),
-        }
-    }
-
-    fn close(&mut self) {
-        let mut handle = self.handle.lock().unwrap();
-        handle.cancel();
-    }
-}
-
-impl TokenBucketInner {
-    // Increment the number of tokens and ensure that it does not exceeds
-    // `burst`. Returns the resulting number.
-    fn inc_num_tokens(&self) -> usize {
-        let mut curr = self.tokens.load(SeqCst);
-        let burst = self.burst.load(Relaxed);
-        loop {
-            if curr >= burst {
-                return curr;
-            }
-
-            let next = curr + 1;
-            match self.tokens.compare_exchange(curr, next, SeqCst, SeqCst) {
-                Ok(_) => {
-                    return next;
-                }
-                Err(actual) => curr = actual,
-            }
-        }
-    }
-
-    // Decrement the number of tokens and ensure that it won't be less than
-    // zero. Returns the resulting number if the decrement operation is done
-    // successfully.
-    fn dec_num_tokens(&self) -> Option<usize> {
-        let mut curr = self.tokens.load(SeqCst);
-        loop {
-            if curr == 0 {
-                return None;
-            }
-
-            let next = curr - 1;
-            match self.tokens.compare_exchange(curr, next, SeqCst, SeqCst) {
-                Ok(_) => {
-                    return Some(next);
-                }
-                Err(actual) => curr = actual,
-            }
-        }
-    }
-}
-
-impl Drop for TokenBucketRateLimiter {
-    fn drop(&mut self) {
-        let prev = self.counter.fetch_sub(1, SeqCst);
-        if prev == 1 {
-            self.close();
-        }
-    }
-}
-
-/// Notify is a future that will be completed when there is an available token
-/// in the token bucket.
-pub struct Notify {
-    token_bucket: Arc<TokenBucketInner>,
-}
-
-impl Future for Notify {
-    type Output = usize;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let num = self.token_bucket.tokens.load(SeqCst);
-        if num >= 1 {
-            Poll::Ready(num)
-        } else {
-            self.token_bucket.waker.register(cx.waker());
-            Poll::Pending
-        }
+        delay(ready).await;
+        true
     }
 }
