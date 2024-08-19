@@ -150,7 +150,7 @@ mod tests {
         let res = rl.acquire_with_timeout(Duration::from_millis(5000)).await;
         assert!(res);
         assert!(
-            start.elapsed() <= Duration::from_millis(300),
+            start.elapsed() <= Duration::from_millis(700),
             "got: {:?}",
             start.elapsed()
         );

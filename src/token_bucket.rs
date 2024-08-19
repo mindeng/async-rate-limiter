@@ -1,4 +1,5 @@
 use std::{
+    pin::Pin,
     sync::{
         atomic::{
             AtomicUsize,
@@ -6,8 +7,11 @@ use std::{
         },
         Arc, Mutex, MutexGuard,
     },
+    task::Poll,
     time::{Duration, Instant},
 };
+
+use futures::{Future, FutureExt};
 
 use crate::rt::delay;
 
@@ -98,7 +102,38 @@ impl TokenBucketRateLimiter {
             }
         };
 
-        delay(ready).await
+        // delay(ready).await
+        Delay::new(ready, self).await;
+    }
+
+    /// Acquire a token. When the token is successfully acquired, it means that
+    /// you can safely perform frequency-controlled operations.
+    ///
+    /// If the method fails to obtain a token after exceeding the `timeout`,
+    /// false will be returned, otherwise true will be returned.
+    pub async fn acquire_with_timeout(&mut self, timeout: Duration) -> bool {
+        let ready = {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(remain) = inner.tokens.checked_sub(1) {
+                inner.tokens = remain;
+                return true;
+            }
+
+            // Update tokens & next
+            match self.update_tokens(inner, Some(timeout)) {
+                Err(Some(ready)) => ready, // to wait
+                Err(None) => return false, // timeout
+                Ok(_) => return true,      // got token
+            }
+        };
+
+        if ready > timeout {
+            return false;
+        }
+
+        // delay(ready).await;
+        Delay::new(ready, self).await;
+        true
     }
 
     // Update tokens & next. Return:
@@ -141,33 +176,54 @@ impl TokenBucketRateLimiter {
             }
         }
     }
+}
 
-    /// Acquire a token. When the token is successfully acquired, it means that
-    /// you can safely perform frequency-controlled operations.
-    ///
-    /// If the method fails to obtain a token after exceeding the `timeout`,
-    /// false will be returned, otherwise true will be returned.
-    pub async fn acquire_with_timeout(&mut self, timeout: Duration) -> bool {
-        let ready = {
-            let mut inner = self.inner.lock().unwrap();
-            if let Some(remain) = inner.tokens.checked_sub(1) {
-                inner.tokens = remain;
-                return true;
+struct Delay<'a> {
+    fut: Pin<Box<dyn Future<Output = ()>>>,
+    token_bucket: &'a TokenBucketRateLimiter,
+    consumed: bool,
+}
+
+unsafe impl Send for Delay<'_> {}
+
+impl<'a> Delay<'a> {
+    fn new(duration: Duration, token_bucket: &'a TokenBucketRateLimiter) -> Delay<'a> {
+        let fut = delay(duration);
+        let fut = Box::pin(fut);
+        Self {
+            fut,
+            token_bucket,
+            consumed: false,
+        }
+    }
+}
+
+impl Future for Delay<'_> {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+        match this.fut.poll_unpin(cx) {
+            std::task::Poll::Ready(_) => {
+                this.consumed = true;
+                Poll::Ready(())
             }
+            std::task::Poll::Pending => Poll::Pending,
+        }
+    }
+}
 
-            // Update tokens & next
-            match self.update_tokens(inner, Some(timeout)) {
-                Err(Some(ready)) => ready, // to wait
-                Err(None) => return false, // timeout
-                Ok(_) => return true,      // got token
-            }
-        };
-
-        if ready > timeout {
-            return false;
+impl Drop for Delay<'_> {
+    fn drop(&mut self) {
+        if self.consumed {
+            return;
         }
 
-        delay(ready).await;
-        true
+        // Return unused token
+        let mut inner = self.token_bucket.inner.lock().unwrap();
+        inner.tokens += 1;
     }
 }
