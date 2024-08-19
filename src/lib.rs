@@ -66,11 +66,13 @@ mod tests {
 
         let start = Instant::now();
         rl.acquire().await;
+        assert!(start.elapsed() < Duration::from_millis(10));
+        rl.acquire().await;
+        assert!(start.elapsed() > Duration::from_millis(330));
         assert!(start.elapsed() < Duration::from_millis(340));
         rl.acquire().await;
+        assert!(start.elapsed() > Duration::from_millis(660));
         assert!(start.elapsed() < Duration::from_millis(680));
-        rl.acquire().await;
-        assert!(start.elapsed() < Duration::from_millis(1010));
 
         let res = rl.acquire_with_timeout(Duration::from_millis(5000)).await;
         assert!(res);
@@ -79,11 +81,11 @@ mod tests {
             "got: {:?}",
             start.elapsed()
         );
-        assert!(start.elapsed() < Duration::from_millis(1340));
+        assert!(start.elapsed() < Duration::from_millis(1030));
 
         let res = rl.acquire_with_timeout(Duration::from_millis(10)).await;
         assert!(!res);
-        assert!(start.elapsed() < Duration::from_millis(1360));
+        assert!(start.elapsed() < Duration::from_millis(1050));
     }
 
     #[tokio::test]
@@ -94,11 +96,13 @@ mod tests {
 
         let start = Instant::now();
         rl.acquire().await;
+        assert!(start.elapsed() < Duration::from_millis(10));
+        rl.acquire().await;
+        assert!(start.elapsed() > Duration::from_millis(330));
         assert!(start.elapsed() < Duration::from_millis(340));
         rl.acquire().await;
+        assert!(start.elapsed() > Duration::from_millis(660));
         assert!(start.elapsed() < Duration::from_millis(680));
-        rl.acquire().await;
-        assert!(start.elapsed() < Duration::from_millis(1010));
 
         let rl2 = rl.clone();
         let jh = spawn(async move {
@@ -129,11 +133,13 @@ mod tests {
 
         let start = Instant::now();
         rl.acquire().await;
+        assert!(start.elapsed() < Duration::from_millis(10));
+        rl.acquire().await;
+        assert!(start.elapsed() > Duration::from_millis(330));
         assert!(start.elapsed() < Duration::from_millis(340));
         rl.acquire().await;
+        assert!(start.elapsed() > Duration::from_millis(660));
         assert!(start.elapsed() < Duration::from_millis(680));
-        rl.acquire().await;
-        assert!(start.elapsed() < Duration::from_millis(1010));
 
         let rl2 = rl.clone();
         let jh = spawn(async move {

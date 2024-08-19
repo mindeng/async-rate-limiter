@@ -54,9 +54,7 @@ impl TokenBucketRateLimiter {
     pub fn new(rate: usize) -> TokenBucketRateLimiter {
         assert!(rate > 0);
 
-        let period_ns = NANOS_PER_SEC
-            .checked_div(rate as u64)
-            .expect("rate is too big");
+        let period_ns = NANOS_PER_SEC.checked_div(rate as u64).unwrap();
 
         let inner = TokenBucketInner {
             tokens: 1,
