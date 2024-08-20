@@ -2,6 +2,19 @@
 //! algorithm](https://en.wikipedia.org/wiki/Token_bucket) that can be used to
 //! limit API access frequency.
 //!
+//! ## Features
+//!
+//! - Simple to use
+//! - Support concurrent access
+//! - Low overhead, the number of tokens is calculated over time
+//!
+//! Thanks to Rust’s `async` / `await`, this crate is very simple to use. Just
+//! put your function call after [`RateLimiter::acquire()`].`await`, then the
+//! function will be called with the specified rate limit.
+//!
+//! [`RateLimiter`] also implements `Clone` trait, so you can use it in
+//! multiple tasks environment easily.
+//!
 //! ## Example
 //!
 //! Update your `Cargo.toml`:
@@ -12,29 +25,39 @@
 //! async-rate-limiter = { version = "1", features = ["rt-tokio"] }
 //! ```
 //!
-//! Thanks to Rust’s async functionality, this crate is very simple to use.
-//! Just put your function call after [`RateLimiter::acquire_with_timeout()`].`await`, then
-//! the function will be called with the specified rate limit.
-//!
 //! Here is a simple example:
 //!
 //! ```rust
 //! use async_rate_limiter::RateLimiter;
 //! use std::time::Duration;
+//! use tokio::spawn;
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     let rl = RateLimiter::new(3);
+//!     // You can change `burst` at anytime
 //!     rl.burst(5);
 //!     
 //!     rl.acquire().await;
 //!     println!("Do something that you want to limit the rate ...");
+//!
+//!     let res = rl.try_acquire();
+//!     if res.is_ok() {
+//!         println!("Do something that you want to limit the rate ...");
+//!     }
 //!
 //!     // acquire with a timeout
 //!     let ok = rl.acquire_with_timeout(Duration::from_secs(10)).await;
 //!     if ok {
 //!         println!("Do something that you want to limit the rate ...");
 //!     }
+//!
+//!     // Concurrent use
+//!     let rl = rl.clone();
+//!     spawn(async move {
+//!         let res = rl.acquire_with_timeout(Duration::from_millis(340)).await;
+//!         assert!(res);
+//!     });
 //! }
 //!
 //! ```
