@@ -70,8 +70,7 @@ impl TokenBucketRateLimiter {
         }
     }
 
-    /// `burst` specifies the maximum burst number of operations allowed in a
-    /// second.
+    /// `burst` specifies the maximum burst number of operations allowed.
     ///
     /// The default value of `burst` is same as `rate`.
     ///
@@ -82,26 +81,37 @@ impl TokenBucketRateLimiter {
         self
     }
 
+    /// Try to acquire a token. Return `Ok` if the token is successfully
+    /// acquired, it means that you can safely perform frequency-controlled
+    /// operations. Otherwise `Err(duration)` is returned, `duration` is the
+    /// minimum time to wait.
+    pub fn try_acquire(&self) -> Result<(), Duration> {
+        let mut inner = self.inner.lock().unwrap();
+        match self.try_acquire_inner(&mut inner) {
+            Ok(_) => Ok(()),
+            Err(next) => Err(next.saturating_duration_since(Instant::now())),
+        }
+    }
+
     /// Acquire a token. When the token is successfully acquired, it means that
     /// you can safely perform frequency-controlled operations.
     pub async fn acquire(&self) {
-        let ready = {
+        let need_to_wait = {
             let mut inner = self.inner.lock().unwrap();
-            if let Some(remain) = inner.tokens.checked_sub(1) {
-                inner.tokens = remain;
+            let Err(next) = self.try_acquire_inner(&mut inner) else {
                 return;
-            }
+            };
 
-            // Update tokens & next
-            if let Err(Some(ready)) = self.update_tokens(inner, None) {
-                ready
-            } else {
-                return;
-            }
+            inner.last = next;
+            self.inc_num_tokens(&mut inner);
+            self.dec_num_tokens(&mut inner);
+
+            next.saturating_duration_since(Instant::now())
         };
 
-        // delay(ready).await
-        Delay::new(ready, self).await;
+        if !need_to_wait.is_zero() {
+            Token::new(need_to_wait, self).await
+        }
     }
 
     /// Acquire a token. When the token is successfully acquired, it means that
@@ -110,82 +120,114 @@ impl TokenBucketRateLimiter {
     /// If the method fails to obtain a token after exceeding the `timeout`,
     /// false will be returned, otherwise true will be returned.
     pub async fn acquire_with_timeout(&self, timeout: Duration) -> bool {
-        let ready = {
+        let need_to_wait = {
             let mut inner = self.inner.lock().unwrap();
-            if let Some(remain) = inner.tokens.checked_sub(1) {
-                inner.tokens = remain;
+            let Err(next) = self.try_acquire_inner(&mut inner) else {
+                return true;
+            };
+
+            inner.last = next;
+            self.inc_num_tokens(&mut inner);
+            self.dec_num_tokens(&mut inner);
+
+            let need_to_wait = next.saturating_duration_since(Instant::now());
+            if need_to_wait > timeout {
+                // failed with timeout
+                return false;
+            }
+
+            inner.last = next;
+            self.inc_num_tokens(&mut inner);
+            self.dec_num_tokens(&mut inner);
+
+            if need_to_wait.is_zero() {
                 return true;
             }
 
-            // Update tokens & next
-            match self.update_tokens(inner, Some(timeout)) {
-                Err(Some(ready)) => ready, // to wait
-                Err(None) => return false, // timeout
-                Ok(_) => return true,      // got token
-            }
+            need_to_wait
         };
 
-        if ready > timeout {
-            return false;
-        }
-
-        // delay(ready).await;
-        Delay::new(ready, self).await;
+        Token::new(need_to_wait, self).await;
         true
     }
 
-    // Update tokens & next. Return:
-    // - Ok if token is available, otherwise return
-    // - Err(duration) if timeout is None or timeout is not exceeded,
-    //   the duration is the time need to wait
-    // - Err(None) if timeout is exceeded
-    fn update_tokens(
+    fn try_acquire_inner(&self, inner: &mut MutexGuard<TokenBucketInner>) -> Result<(), Instant> {
+        if let Some(remain) = inner.tokens.checked_sub(1) {
+            inner.tokens = remain;
+            return Ok(());
+        }
+
+        match self.tokens_since_last(inner) {
+            Ok((tokens, duration)) => {
+                self.set_num_tokens(inner, tokens);
+                inner.last += duration;
+                // consume 1 token
+                self.dec_num_tokens(inner);
+                Ok(())
+            }
+            Err(duration) => Err(inner.last + duration),
+        }
+    }
+
+    // Get tokens generated since `last` time. Return:
+    //
+    // - Ok((tokens, duration)) if tokens has been generated, duration is the time it
+    //   takes to generate the token.
+    //
+    // - Err(duration) if tokens hasn't been generate yet, need to wait until
+    //   next cycle, duration is the period of the cycle.
+    fn tokens_since_last(
         &self,
-        mut inner: MutexGuard<TokenBucketInner>,
-        timeout: Option<Duration>,
-    ) -> Result<(), Option<Duration>> {
+        inner: &MutexGuard<TokenBucketInner>,
+    ) -> Result<(usize, Duration), Duration> {
         let now = Instant::now();
         let since_last = now
             .checked_duration_since(inner.last)
             .unwrap_or(Duration::ZERO);
         let since_nanos = since_last.as_nanos();
         if since_nanos >= self.period_ns as u128 {
-            let extra_tokens = since_nanos / (self.period_ns as u128);
-            assert!(extra_tokens >= 1);
-            inner.tokens = std::cmp::min(self.burst.load(Relaxed), extra_tokens as usize)
-                .checked_sub(1)
-                .unwrap();
-            inner.last += Duration::from_nanos((extra_tokens * self.period_ns as u128) as u64);
-            Ok(())
+            let tokens = since_nanos / (self.period_ns as u128);
+            assert!(tokens >= 1);
+            Ok((
+                tokens as usize,
+                Duration::from_nanos(tokens as u64 * self.period_ns),
+            ))
         } else {
-            inner.last += Duration::from_nanos(self.period_ns);
-            inner.tokens = 1;
-            let need_to_wait = inner.last - now;
-            if let Some(timeout) = timeout {
-                if timeout >= need_to_wait {
-                    inner.tokens = 0;
-                    Err(Some(need_to_wait))
-                } else {
-                    Err(None)
-                }
-            } else {
-                inner.tokens = 0;
-                Err(Some(need_to_wait))
-            }
+            Err(Duration::from_nanos(self.period_ns))
         }
+    }
+
+    fn set_num_tokens(&self, inner: &mut MutexGuard<TokenBucketInner>, num: usize) {
+        inner.tokens = std::cmp::min(self.burst.load(Relaxed), num);
+    }
+
+    fn dec_num_tokens(&self, inner: &mut MutexGuard<TokenBucketInner>) -> Option<usize> {
+        if let Some(num) = inner.tokens.checked_sub(1) {
+            inner.tokens = num;
+            Some(num)
+        } else {
+            None
+        }
+    }
+
+    fn inc_num_tokens(&self, inner: &mut MutexGuard<TokenBucketInner>) -> usize {
+        if let Some(num) = inner.tokens.checked_add(1) {
+            self.set_num_tokens(inner, num);
+        }
+        inner.tokens
     }
 }
 
-struct Delay<'a> {
+struct Token<'a> {
     fut: Pin<Box<dyn Future<Output = ()>>>,
     token_bucket: &'a TokenBucketRateLimiter,
     consumed: bool,
 }
 
-unsafe impl Send for Delay<'_> {}
+unsafe impl Send for Token<'_> {}
 
-impl<'a> Delay<'a> {
-    fn new(duration: Duration, token_bucket: &'a TokenBucketRateLimiter) -> Delay<'a> {
+impl<'a> Token<'a> {
+    fn new(duration: Duration, token_bucket: &'a TokenBucketRateLimiter) -> Token<'a> {
         let fut = delay(duration);
         let fut = Box::pin(fut);
         Self {
@@ -196,7 +238,7 @@ impl<'a> Delay<'a> {
     }
 }
 
-impl Future for Delay<'_> {
+impl Future for Token<'_> {
     type Output = ();
 
     fn poll(
@@ -214,7 +256,7 @@ impl Future for Delay<'_> {
     }
 }
 
-impl Drop for Delay<'_> {
+impl Drop for Token<'_> {
     fn drop(&mut self) {
         if self.consumed {
             return;
@@ -222,6 +264,7 @@ impl Drop for Delay<'_> {
 
         // Return unused token
         let mut inner = self.token_bucket.inner.lock().unwrap();
-        inner.tokens += 1;
+        let num = inner.tokens + 1;
+        self.token_bucket.set_num_tokens(&mut inner, num);
     }
 }

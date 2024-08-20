@@ -54,13 +54,32 @@ mod tests {
 
     use super::*;
 
-    // When using async-std runtime, the delay/interval will be longer than
+    // When using async-std runtime, the delay/interval seems to be longer than
     // expected, so the time check condition is deliberately relaxed in the
     // test case.
 
     #[tokio::test]
     #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
-    async fn test_acquire_with_timeout() {
+    async fn test_try_acquire() {
+        use rt::delay;
+
+        let rl = RateLimiter::new(3);
+        rl.burst(5);
+
+        rl.try_acquire().unwrap();
+
+        let duration = rl.try_acquire().unwrap_err();
+        assert!(duration > Duration::from_millis(330));
+        assert!(duration < Duration::from_millis(340));
+
+        delay(duration).await;
+
+        rl.try_acquire().unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(any(feature = "rt-tokio", feature = "rt-async-std"))]
+    async fn test_acquire() {
         let rl = RateLimiter::new(3);
         rl.burst(5);
 
@@ -157,6 +176,15 @@ mod tests {
         assert!(res);
         assert!(
             start.elapsed() <= Duration::from_millis(700),
+            "got: {:?}",
+            start.elapsed()
+        );
+
+        let start = Instant::now();
+        let res = rl.acquire_with_timeout(Duration::from_millis(5000)).await;
+        assert!(res);
+        assert!(
+            start.elapsed() <= Duration::from_millis(10),
             "got: {:?}",
             start.elapsed()
         );
