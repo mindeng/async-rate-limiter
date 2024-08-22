@@ -1,5 +1,4 @@
 use std::{
-    pin::Pin,
     sync::{
         atomic::{
             AtomicUsize,
@@ -11,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::Future;
+use futures::{future::BoxFuture, Future};
 
 use crate::rt::delay;
 
@@ -219,12 +218,10 @@ impl TokenBucketRateLimiter {
 }
 
 struct Token<'a> {
-    fut: Pin<Box<dyn Future<Output = ()>>>,
+    fut: BoxFuture<'a, ()>,
     token_bucket: &'a TokenBucketRateLimiter,
     consumed: bool,
 }
-
-unsafe impl Send for Token<'_> {}
 
 impl<'a> Token<'a> {
     fn new(duration: Duration, token_bucket: &'a TokenBucketRateLimiter) -> Token<'a> {
