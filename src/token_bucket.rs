@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::{Future, FutureExt};
+use futures::Future;
 
 use crate::rt::delay;
 
@@ -246,7 +246,7 @@ impl Future for Token<'_> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        match this.fut.poll_unpin(cx) {
+        match this.fut.as_mut().poll(cx) {
             std::task::Poll::Ready(_) => {
                 this.consumed = true;
                 Poll::Ready(())
